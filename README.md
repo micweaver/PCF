@@ -11,6 +11,9 @@ php并发框架，让开发的脚本自动并发运行起来
 
 
 
+
+
+
 PCF的框架图如下，具体解释见 http://blog.csdn.net/micweaver/article/details/18143737
 ![github](http://img.blog.csdn.net/20140111171633609 "github")
 
