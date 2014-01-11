@@ -67,3 +67,5 @@ PCF的框架图如下，具体解释见 http://blog.csdn.net/micweaver/article/d
 
 	$obj = new Example();
 	$obj->run();
+	
+启动并发只要执行 php usercode.php batch 3 ，表示启动3个并发，可以随时更改并发的参数，也可以设为0，表示停止所有的处理
