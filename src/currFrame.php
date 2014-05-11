@@ -114,7 +114,7 @@ EOF;
 	 * @param string $msg 要处理的消息
 	 * @param string $pos 消息处理到的进度
 	 */
-   abstract public function process($msg,$pos = NULL);
+        abstract public function process($msg,$pos = NULL);
 	
 	/**
 	 * 对最后的结果进行处理
