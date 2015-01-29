@@ -1,22 +1,22 @@
 <?php  
 /**
  * @author   lizhonghua
- * @version  0.5
+ * @version  0.9
  * @desc   PCF PHP并发框架
  */
 
  declare(ticks = 1);
  abstract  class CurrFrame {
 	
-	public $framedir = 'currFrame';
-	public $msgqueuefile = 'currFrame/msgqueue'; //消息文件
-	public $processingfile = 'currFrame/processing';//正在处理中的消息
-	public $completefile = 'currFrame/compeleted';//已经完成的消息
-	public $hangfile = 'currFrame/hang';//暂停的消息
+	public $framedir = 'currFrameData';
+	public $msgqueuefile = 'currFrameData/msgqueue'; //消息文件
+	public $processingfile = 'currFrameData/processing';//正在处理中的消息
+	public $completefile = 'currFrameData/compeleted';//已经完成的消息
+	public $hangfile = 'currFrameData/hang';//暂停的消息
 	public $monitor = 'monitor'; 
 	
-	public $processdir = 'currFrame/process'; 
-	public $processlogdir = 'currFrame/log';
+	public $processdir = 'currFrameData/process'; 
+	public $processlogdir = 'currFrameData/log';
 	
 	public $currMsg;//当前进程处理的消息
 	public $currProcess;//当前进程处理到的进度
@@ -28,40 +28,50 @@
 	
 	const MAX_PROCESS_NUM = 100; //最大并发数
 	
-	private $isend;
+	private $fixpronum =0;
+	private $isneemsg = true; //是否需要产生消息,消息由其它地方产生时可设置为false,比如消息队列kafka的consumer
+	private $isend = false;
 	
+	private static $count = 0;
+	
+	
+	private function _init(){
+	    $this->currMsg == NULL;
+	    $this->currProcess == NULL;
+	    $this->lockh = NULL;
+	  
+	    pcntl_signal(SIGHUP,array($this,'sig_hup_handler'));
+	    pcntl_signal(SIGTERM,array($this,'sig_hup_handler'));
+	    //register_shutdown_function(array($this,'sig_hup_handler'));
+	    
+	    if(!file_exists($this->framedir)){
+	        mkdir($this->framedir);
+	    }
+	    
+	    if(!file_exists($this->processdir)){
+	        mkdir($this->processdir);
+	    }
+	    
+	    if(!file_exists($this->processlogdir)){
+	        mkdir($this->processlogdir);
+	    }
+	    
+	    touch($this->msgqueuefile);
+	    touch($this->processingfile);
+	    touch($this->hangfile);
+	    touch($this->completefile);
+	}
 	public function __construct(){
-		
-		$this->currMsg == NULL;
-		$this->currProcess == NULL;
-		$this->lockh = NULL;
-		$this->isend = false;
-		pcntl_signal(SIGHUP,array($this,'sig_hup_handler'));
-		pcntl_signal(SIGTERM,array($this,'sig_hup_handler'));
-		//register_shutdown_function(array($this,'sig_hup_handler'));
-		
-		if(!file_exists($this->framedir)){
-			mkdir($this->framedir);
-		}
-		
-		if(!file_exists($this->processdir)){
-			mkdir($this->processdir);
-		}
-		
-		if(!file_exists($this->processlogdir)){
-			mkdir($this->processlogdir);
-		}
-
-		touch($this->msgqueuefile);
-		touch($this->processingfile);
-		touch($this->hangfile);
-		touch($this->completefile);
+		$this->_init();
 	}
 	
 	public function getHelp(){
 		
 		return <<<EOF
 usage:
+ php scriptname start  //启动进程，用户代码配置进程数
+ php scriptname restart  //重新启动所有进程
+ php scriptname stop  //停止所有进程
  php scriptname batch batchnum //启动 batchnum个进程
  php scriptname batch 0 // batchnum传0杀死所有进程
  php scriptname clean // 删除框架产生的数据文件,慎用
@@ -70,7 +80,6 @@ EOF;
 	}
 	
 	public function run(){
-		
 		$pnum = intval($GLOBALS['argc']);
 		if($pnum < 2) {
 		    echo $this->getHelp();
@@ -79,11 +88,6 @@ EOF;
 		
 		$cmd = $GLOBALS['argv'][1];
 		switch ($cmd){
-			case 'msg' :   //表示执行消息  $GLOBALS['argv'][2] ，由框架自动触发，不要手动运行该命令
-				$this->currMsg = $GLOBALS['argv'][2];
-				$this->start();
-				$this->end();
-				break;
 			case 'batch' : //调整运行中的进程数为 $GLOBALS['argv'][2]
 				$batchnum = intval($GLOBALS['argv'][2]);
 				if($batchnum > self::MAX_PROCESS_NUM){
@@ -91,8 +95,39 @@ EOF;
 				}
 				$this->batch($batchnum);
 				break;   
+			case 'start' :  //可能启动进程数目不足
+			    $nownum = $this->getProcessNum();
+			    if($nownum > 0){
+			        echo  "{$nownum} process is running".PHP_EOL;
+			        $this->print_running_process();
+			        exit;
+			    }
+			    $this->destroyFile();
+			    if($this->fixpronum > 0){
+			        $this->batch($this->fixpronum);
+			    }
+			    break;
+			case 'restart' : //重新启动所有进程
+			    $this->restartAll();
+			    break;
+			case 'stop' : 
+			    $nownum = $this->getProcessNum();
+			    if($nownum == 0){
+			        exit("no process is running".PHP_EOL);
+			    }
+			    $this->batch(0);
+			    break;
+    	    case 'msg' :   //表示执行消息  $GLOBALS['argv'][2] ，由框架自动触发，不要手动运行该命令
+    	        $this->currMsg = $GLOBALS['argv'][2];
+    	        $this->start();
+    	        $this->end();
+    	        break;
 			case 'clean' :  //删除框架产生的数据文件
-				exec('rm -rf '.$this->framedir,$output);
+			    $nownum = $this->getProcessNum();
+			    if($nownum > 0){
+			        exit("{$nownum} process is running".PHP_EOL);
+			    }
+				$this->destroyFile();
 				$this->isend = true;
 				exit('rm data success'.PHP_EOL);
 			default:
@@ -101,8 +136,19 @@ EOF;
 				exit();
 		}
 		
+		
+		if(in_array($cmd,array('batch','start','restart','stop'))) {
+		    usleep(100000);
+		    $this->print_running_process();
+		}
+		
 	}
 	
+	public function print_running_process(){
+	    $cmd = "ps -ef | grep ". $GLOBALS['argv'][0].' | grep -v batch | grep -v start | grep -v restart | grep -v stop | grep -v grep';
+	    system($cmd);
+	    echo PHP_EOL;
+	}
 	/**
 	 * 生产消息,每当没有要处理的消息时会尝试生产新的消息，有个标志标记所有消息已处理完
 	 * 新消息的产生由用户代码实现
@@ -114,7 +160,7 @@ EOF;
 	 * @param string $msg 要处理的消息
 	 * @param string $pos 消息处理到的进度
 	 */
-        abstract public function process($msg,$pos = NULL);
+   abstract public function process($msg,$pos = NULL);
 	
 	/**
 	 * 对最后的结果进行处理
@@ -129,14 +175,11 @@ EOF;
 	 *  开始运行
 	*/
 	public function start(){
-	
 	    $arrMsg = array_merge((array)file($this->processingfile,FILE_IGNORE_NEW_LINES | FILE_SKIP_EMPTY_LINES),(array)file($this->completefile,FILE_IGNORE_NEW_LINES | FILE_SKIP_EMPTY_LINES));
 	    if(in_array($this->currMsg, $arrMsg)) self::exit_fail('msg was handled');
 	
 	    $arrPro = $this->getRunningProcess();
-	
 	    if(isset($arrPro[$this->currMsg])) self::exit_fail('msg is running');
-	
 	    if($this->restart()) return ;
 	    $this->msg_start();
 	    $start = time();
@@ -155,35 +198,73 @@ EOF;
 	    $this->deleteMsg($this->msgqueuefile, $this->currMsg);
 	}
 	
+	
+	public function setProcessNum($num,$add_num =0){
+	    $arrPro = $this->getRunningProcess();
+	    $pronum = $this->getProcessNum();
+	    if($num > $pronum){
+	        $pnum = $num - $pronum;
+	        $pnum = $add_num > $pnum ? $add_num : $pnum;
+	        while ($pnum--){
+	            $msg = $this->getNextMsg();
+	            if($msg === NULL){
+	                self::exit_fail('no more msg');
+	            }
+	            
+	            $this->deleteMsg($this->msgqueuefile, $msg);
+	            $this->startNextProcess($msg);
+	        }
+	    } elseif($num < $pronum) {
+	        $pnum = $pronum-$num;
+	        while ($pnum--){
+	            $pro = array_pop($arrPro);
+	            posix_kill($pro['pid'], SIGHUP);
+	            $this->writeLog("hup msg {$pro['msg']}",$this->monitor,false);
+	            if(empty($arrPro)) break;
+	        }
+	    }
+	    
+	}
+	
+	public function getProcessNum(){
+	    $arrPro = $this->getRunningProcess();
+	    return  count($arrPro);
+	}
+	
 
+	public function destroyFile(){
+	    exec('rm -rf '.$this->framedir,$output);
+	}
+	public function restartAll(){
+	    
+	    $nownum = $this->getProcessNum();
+	    $pronum = $nownum > $this->fixpronum ? $nownum : $this->fixpronum;
+	    $this->setProcessNum(0);
+	    echo "stop all process : {$nownum}".PHP_EOL;
+	    $this->destroyFile();
+	    sleep(1); //等待所有进程都退出
+	    $this->setProcessNum($pronum,$pronum);
+	    usleep(500000); //等待所有进程都启动
+	    $nownum = $this->getProcessNum();
+	    if($nownum < $pronum) {
+	        echo "!! restart fail nownum:{$nownum}".PHP_EOL;
+	    } else {
+	        echo "restart all process".PHP_EOL;
+	    }
+ 	}
+ 	
 	/**
 	 * 启动N个进程
 	 * @param int $batchnum 要启动的进程个数，最终运行的进程数等于 $batchnum,这可能要启动新的进程或暂停一定数目已启动进程
 	 */
 	public function batch($batchnum){
-		$arrPro = $this->getRunningProcess();
-		$pronum = count($arrPro);
-		if($batchnum > $pronum){
-			$pnum = $batchnum - $pronum;
-			while ($pnum--){	
-				$msg = $this->getNextMsg();
-				if($msg === NULL){
-					self::exit_fail('no more msg');
-				}
-				$this->deleteMsg($this->msgqueuefile, $msg);
-				$this->startNextProcess($msg);
-			}
-		} elseif($batchnum < $pronum) {
-			$pnum = $pronum-$batchnum;
-			while ($pnum--){
-				$pro = array_pop($arrPro);
-				posix_kill($pro['pid'], SIGHUP);
-				$this->writeLog("hup msg {$pro['msg']}",$this->monitor,false);
-				if(empty($arrPro)) break;
-			}
+	    $num = $this->getProcessNum();
+		$this->setProcessNum($batchnum);
+		if($batchnum > 0) {
+		    echo ("start  {$batchnum} process success\n");
+		} else {
+		    echo ("stop all process({$num}) success\n");
 		}
-		
-		exit("start  {$batchnum} process success\n");
 		
 	}
 	
@@ -195,13 +276,12 @@ EOF;
 	public function end(){
 		
 		$this->stop();
-		
 		/*
 		 * 判断是不是最后一个进程，并进行结果综合处理
 		 */
 		if($this->chechMsgEnd()){
-		  $process = $this->getRunningProcess();
-		  if(count($process) == 0){
+		  $nownum = $this->getProcessNum();
+		  if($nownum == 0){
 			  $arrMsg = (array)file($this->msgqueuefile);
 			  if(count($arrMsg) == 1 && trim($arrMsg[0]) == self::MSG_END){
 			     $this->output();
@@ -377,6 +457,10 @@ EOF;
 	 */
 	public function getNextMsg(){
 		
+	    if(!$this->isneemsg) {
+	        return self::$count++;
+	    }
+	    
 		if(file_exists($this->hangfile)) {
 			$arrHang =  file($this->hangfile,FILE_IGNORE_NEW_LINES | FILE_SKIP_EMPTY_LINES);
 			if(!empty($arrHang)){
@@ -412,7 +496,8 @@ EOF;
 	public function startNextProcess($msg){
 		
 		$scriptPath = $GLOBALS['argv'][0];
-		$cmd = "nohup php {$scriptPath} msg {$msg}  >> /dev/null  &";
+		$cmd = "nohup /usr/local/bin/php {$scriptPath} msg {$msg}  >> /dev/null  2>&1 &";
+		//echo $cmd.PHP_EOL;
 		$this->writeLog($msg." start",$this->monitor,false);
 		exec($cmd);
 		
@@ -465,6 +550,8 @@ EOF;
      */
     public function deleteMsg($filename,$msg){
     	
+        if(!$this->isneemsg) return true;
+        
     	if($this->lock()){
     		$arrMsg = file($filename,FILE_IGNORE_NEW_LINES | FILE_SKIP_EMPTY_LINES);
     		foreach ($arrMsg as $key => $val){
@@ -476,6 +563,14 @@ EOF;
     		$this->LockWrite($filename, implode("\n", $arrMsg)."\n");
     		$this->unLock();
     	}
+    }
+    
+    public function  setIsNeedMsg($isneedmsg = true){ 
+        $this->isneemsg =  $isneedmsg;
+    }
+    
+    public function setFixNum($fixnum){
+        $this->fixpronum = $fixnum;
     }
     
     public function LockWrite($filename,$msg){
@@ -527,6 +622,7 @@ EOF;
 		}else{
 		  $file = $this->processlogdir.'/'.$type.'.log'.'_'.date('Ymd',time());
 		}
+		$file = getcwd().'/'.$file;
 		$this->LockAppend($file, $msg);
     }
 }
