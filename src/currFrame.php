@@ -117,11 +117,11 @@ EOF;
 			    }
 			    $this->batch(0);
 			    break;
-    	    case 'msg' :   //表示执行消息  $GLOBALS['argv'][2] ，由框架自动触发，不要手动运行该命令
-    	        $this->currMsg = $GLOBALS['argv'][2];
-    	        $this->start();
-    	        $this->end();
-    	        break;
+    	                case 'msg' :   //表示执行消息  $GLOBALS['argv'][2] ，由框架自动触发，不要手动运行该命令
+	    	            $this->currMsg = $GLOBALS['argv'][2];
+	    	            $this->start();
+	    	            $this->end();
+	    	            break;
 			case 'clean' :  //删除框架产生的数据文件
 			    $nownum = $this->getProcessNum();
 			    if($nownum > 0){
